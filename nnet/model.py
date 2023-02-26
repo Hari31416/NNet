@@ -1,8 +1,8 @@
-from layers import *
-from losses import *
-from scores import *
-from utils import *
-from initializers import *
+from nnet.layers import *
+from nnet.losses import *
+from nnet.scores import *
+from nnet.utils import *
+from nnet.initializers import *
 from tqdm import tqdm
 import numpy as np
 from tabulate import tabulate
@@ -56,49 +56,44 @@ class Sequential:
             self.layers.append(layer)
             self.__j += 1
 
-    def __shape_list(self) -> list[int]:
-        neurons = []
-        neurons.append(self[0].input_shape[0])
+    def _calc_output_shapes(self):
+        output_shapes = [self[0].input_shape]
         for i in range(1, len(self)):
-            for layer in NON_TRAIANBLE_LAYERS:
-                if isinstance(self[i], layer):
-                    self[i].neurons = self[i - 1].neurons
-        for i in range(1, len(self)):
-            neurons.append(self[i].neurons)
-        self.__neurons = neurons
-        return neurons
+            out = self[i]._output_shape(output_shapes[i - 1])
+            output_shapes.append(out)
+        return output_shapes
 
-    def __cal_W_b_shapes(self):
-        shape_list = self.__shape_list()
-        Ws = [PLACEHOLDER]
-        bs = [PLACEHOLDER]
+    def _calc_input_shapes(self, output_shapes=None):
+        input_shapes = [self[0].input_shape]
         for i in range(1, len(self)):
-            if isinstance(self[i], Dense):
-                Ws.append((shape_list[i], shape_list[i - 1]))
-                bs.append((shape_list[i], 1))
-            else:
-                Ws.append(PLACEHOLDER)
-                bs.append(PLACEHOLDER)
+            in_ = output_shapes[i - 1]
+            input_shapes.append(in_)
+        return input_shapes
+
+    def _calc_W_b_shapes(self):
+        output_shapes = self._calc_output_shapes()
+        input_shapes = self._calc_input_shapes(output_shapes=output_shapes)
+        Ws = [None]
+        bs = [None]
+        for i in range(1, len(self)):
+            W, b = self[i]._calc_W_b_shape(input_shapes[i], output_shapes[i])
+            Ws.append(W)
+            bs.append(b)
         return Ws, bs
 
-    def __parameters(self):
-        Ws, bs = self.__cal_W_b_shapes()
-        parameters = [0]
+    def _calc_num_params(self):
+        Ws, bs = self._calc_W_b_shapes()
+        num_params = [0]
         for i in range(1, len(self)):
-            if Ws[i] == PLACEHOLDER:
-                parameters.append(0)
-                continue
-            a, b = Ws[i]
-            c, _ = bs[i]
-            p = a * b + c
-            parameters.append(p)
-        return parameters
+            num_params.append(self[i]._num_params(Ws[i], bs[i]))
+        return num_params
 
     def __info(self, print_too=True):
-        Ws, bs = self.__cal_W_b_shapes()
-        neurons = self.__neurons
+        Ws, bs = self._calc_W_b_shapes()
+        output_shapes = self._calc_output_shapes()
+        input_shapes = self._calc_input_shapes(output_shapes=output_shapes)
         names = self.__names
-        parameters = self.__parameters()
+        parameters = self._calc_num_params()
         total_parameters = sum(parameters)
 
         table = []
@@ -106,24 +101,29 @@ class Sequential:
         for i in range(len(Ws)):
             temp_dict = {
                 "name": names[i],
-                "neurons": neurons[i],
+                "input": input_shapes[i],
+                "output": output_shapes[i],
                 "W": Ws[i],
                 "b": bs[i],
                 "params": parameters[i],
-                "output": (neurons[i],),
             }
             table.append(temp_dict)
         self.info = table
         if print_too:
             headers = {
                 "name": "Name",
-                "neurons": "# Neurons",
+                "input": "Input Shapes",
+                "output": "Output Shapes",
                 "W": "Weight Shapes",
                 "b": "Bias Shapes",
                 "params": "# Parameters",
-                "output": "Output Shapes",
             }
-            tabulate_res = tabulate(table, headers=headers)
+            tabulate_res = tabulate(
+                table,
+                headers=headers,
+                tablefmt="fancy_grid",
+                missingval="None",
+            )
             table_row_len = len(tabulate_res.split("\n")[1])
             table_res = "Model: " + self.name + "\n"
             table_res += "_" * table_row_len + "\n"
@@ -149,7 +149,7 @@ class Sequential:
 
     def compile(self, loss: Loss, metrics: list[str] = [], initializer="glorot"):
         self._loss_function = parse_loss(loss)
-        if self._loss_function is MeanSquaredLoss:
+        if self._loss_function is MeanSquaredLoss:  # TODO: Fix this
             self.__task = "regression"
         else:
             self.__task = "classification"
@@ -165,7 +165,7 @@ class Sequential:
 
         for i in range(1, len(self)):
             w_shape = self.info[i]["W"]
-            if w_shape == PLACEHOLDER:
+            if w_shape is None:
                 continue
             b_shape = self.info[i]["b"]
             self[i].weight = self.__create_weights(w_shape, initializer=initializer)
@@ -184,15 +184,15 @@ class Sequential:
         delta_L = loss_derivative * dAdZ
         return delta_L
 
-    def _update_parameters(self):
-        for layer in self.layers[1:]:
-            layer.update(self.lr)
-
     def _backward(self, y_true):
         delta_L = self.__cal_delta_L(y_true)
         reverse_layers_nums = range(len(self) - 1, 0, -1)
         for i in reverse_layers_nums:
             delta_L = self[i].backward(delta_L)
+
+    def _update_parameters(self):
+        for layer in self.layers[1:]:
+            layer.update(self.lr)
 
     def __create_batch(self, X, y, batch_size):
         m = X.shape[1]

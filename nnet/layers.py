@@ -1,8 +1,9 @@
+from nnet.activations import *
+from nnet.utils import *
+from nnet.convolution import *
+
 import numpy as np
 from abc import ABC, abstractmethod
-from activations import *
-from utils import *
-from convolution import *
 
 
 class Layer(ABC):
@@ -48,6 +49,7 @@ class Input(Layer):
         super().__init__()
         self.input_shape = input_shape
         self.name = name
+        self.trainable = False
 
     def __repr__(self) -> str:
         return f"Input({self.input_shape})"
@@ -59,6 +61,15 @@ class Input(Layer):
 
     def backward(self):
         pass
+
+    def _output_shape(self, input_shape):
+        return input_shape
+
+    def _calc_W_b_shape(self, input_shape, output_shape):
+        return None, None
+
+    def _num_params(self, W_shape, b_shape):
+        return 0
 
 
 class Dense(Layer):
@@ -101,9 +112,9 @@ class Dense(Layer):
         db = np.sum(delta_next, axis=1, keepdims=True)
         assert dW.shape == self.weight.shape
         assert db.shape == self.bias.shape
-        if dW.max() > 100:
+        if dW.max() > 500:
             raise ValueError("dW is Exploding", dW.max(), dW.shape)
-        if db.max() > 100:
+        if db.max() > 500:
             raise ValueError("db is Exploding", db.max(), db.shape)
         self.dW = dW
         self.db = db
@@ -113,6 +124,15 @@ class Dense(Layer):
     def update(self, lr):
         self.weight -= lr * self.dW
         self.bias -= lr * self.db
+
+    def _output_shape(self, input_shape):
+        return (self.neurons,)
+
+    def _calc_W_b_shape(self, input_shape, output_shape):
+        return (output_shape[0], input_shape[0]), (output_shape[0], 1)
+
+    def _num_params(self, W_shape, b_shape):
+        return np.prod(W_shape) + np.prod(b_shape)
 
 
 class Dropout(Layer):
@@ -139,6 +159,15 @@ class Dropout(Layer):
         delta_next = delta_l * self.mask
         return delta_next
 
+    def _output_shape(self, input_shape):
+        return input_shape
+
+    def _calc_W_b_shape(self, input_shape, output_shape):
+        return None, None
+
+    def _num_params(self, W_shape, b_shape):
+        return 0
+
 
 class Flatten(Layer):
     """
@@ -154,12 +183,60 @@ class Flatten(Layer):
 
     def forward(self, input):
         self.input = input
-        self.output = input.reshape(input.shape[0], -1)
+        m = input.shape[-1]
+        self.output = input.reshape((np.prod(input.shape[:-1]), m))
         return self.output
 
     def backward(self, delta_l):
         delta_next = delta_l.reshape(self.input.shape)
         return delta_next
+
+    def _output_shape(self, input_shape):
+        return (np.prod(input_shape),)
+
+    def _calc_W_b_shape(self, input_shape, output_shape):
+        return None, None
+
+    def _num_params(self, W_shape, b_shape):
+        return 0
+
+
+class Reshape(Layer):
+    """
+    The reshape layer
+    """
+
+    def __init__(self, output_shape, name=None):
+        super().__init__()
+        self.output_shape = output_shape
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"Reshape({self.output_shape})"
+
+    def forward(self, input):
+        self.input = input
+        m = input.shape[-1]
+        output = np.zeros(
+            (self.output_shape[0], self.output_shape[1], self.output_shape[2], m)
+        )
+        for i in range(m):
+            output[:, :, :, i] = input[:, i].reshape(self.output_shape)
+        self.output = output
+        return self.output
+
+    def backward(self, delta_l):
+        delta_next = delta_l.reshape(self.input.shape)
+        return delta_next
+
+    def _output_shape(self, input_shape):
+        return self.output_shape
+
+    def _calc_W_b_shape(self, input_shape, output_shape):
+        return None, None
+
+    def _num_params(self, W_shape, b_shape):
+        return 0
 
 
 class Conv2D(Layer):
@@ -179,6 +256,7 @@ class Conv2D(Layer):
         super().__init__()
         self.filters = filters
         self.kernel_size = kernel_size
+        self.kernel_height, self.kernel_width = kernel_size
         self.stride = stride
         self.padding = padding
         self.activation = parse_activation(activation)
@@ -227,6 +305,26 @@ class Conv2D(Layer):
         self.weight -= lr * self.dW
         self.bias -= lr * self.db
 
+    def _output_shape(self, input_shape):
+        size = self.conv._output_shape(
+            input_shape,
+            self.kernel_size,
+            self.stride,
+            self.padding,
+            self.filters,
+        )
+        return size
+
+    def _calc_W_b_shape(self, input_shape, output_shape):
+        hi, wi, ci = input_shape
+        ho, wo, co = output_shape
+        W_shape = (self.kernel_height, self.kernel_width, ci, co)
+        b_shape = (co, 1)
+        return W_shape, b_shape
+
+    def _num_params(self, W_shape, b_shape):
+        return np.prod(W_shape) + np.prod(b_shape)
+
 
 class MaxPool2D(Layer):
     """
@@ -241,6 +339,7 @@ class MaxPool2D(Layer):
     ):
         super().__init__()
         self.kernel_size = kernel_size
+        self.kernel_height, self.kernel_width = kernel_size
         self.stride = stride
         self.name = name
         self.pool = Convolution()
@@ -257,9 +356,28 @@ class MaxPool2D(Layer):
 
     def backward(self, delta_l):
         delta_next = self.pool.max_pool_backward(
-            delta_l, self.input, self.kernel_size, self.stride
+            delta_l,
+            self.input,
+            self.kernel_size,
+            self.stride,
         )
         return delta_next
+
+    def _output_shape(self, input_shape):
+        hi, wi, ci = input_shape
+        ho = (hi - self.kernel_height) // self.stride + 1
+        wo = (wi - self.kernel_width) // self.stride + 1
+        return (
+            ho,
+            wo,
+            ci,
+        )
+
+    def _calc_W_b_shape(self, input_shape, output_shape):
+        return None, None
+
+    def _num_params(self, W_shape, b_shape):
+        return 0
 
 
 class AveragePool2D(Layer):
@@ -294,3 +412,19 @@ class AveragePool2D(Layer):
             delta_l, self.input, self.kernel_size, self.stride
         )
         return delta_next
+
+    def _output_shape(self, input_shape):
+        hi, wi, ci = input_shape
+        ho = (hi - self.kernel_size) // self.stride + 1
+        wo = (wi - self.kernel_size) // self.stride + 1
+        return (
+            ho,
+            wo,
+            ci,
+        )
+
+    def _calc_W_b_shape(self, input_shape, output_shape):
+        return None, None
+
+    def _num_params(self, W_shape, b_shape):
+        return 0

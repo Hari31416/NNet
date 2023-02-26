@@ -1,9 +1,9 @@
-from model import Sequential
-from layers import Input, Dense, Dropout
+from nnet.model import Sequential
+from nnet.layers import Input, Dense, Dropout, Conv2D, MaxPool2D, Flatten
+from nnet.utils import one_hot
 import numpy as np
 from sklearn.datasets import make_regression
 import pandas as pd
-from utils import one_hot
 import matplotlib.pyplot as plt
 
 fashion = pd.read_csv(
@@ -185,12 +185,12 @@ def multi_class():
     )
 
     history = model.fit(X, y_oh, epochs=100, lr=0.05, batch_size=100, verbose=2)
-    history_df = pd.DataFrame(history)
-    width = 6
-    height = 6 * len(history_df.columns)
-    history_df.plot(subplots=True, figsize=(width, height))
-    plt.tight_layout()
-    plt.show()
+    # history_df = pd.DataFrame(history)
+    # width = 6
+    # height = 6 * len(history_df.columns)
+    # history_df.plot(subplots=True, figsize=(width, height))
+    # plt.tight_layout()
+    # plt.show()
 
 
 def regression():

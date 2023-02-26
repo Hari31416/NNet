@@ -1,7 +1,10 @@
+from nnet.losses import *
+from nnet.scores import *
+from nnet.activations import *
+
 import numpy as np
-from losses import *
-from scores import *
-from activations import *
+
+# TODO: Do all the parsing in a better way. Make them uniform.
 
 
 def parse_loss(loss):
